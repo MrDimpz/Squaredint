@@ -17,6 +17,7 @@ import {
   signInWithGooglePopup,
   loginWithEmailPassword,
   registerWithEmailPassword,
+  resetUserPassword,
   logoutUser,
   FIREBASE_PROJECT_ID,
   MAX_DISPLAY_NAME_LENGTH,
@@ -39,11 +40,12 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
   currentScore,
   currentPuzzleTitle,
 }) => {
-  const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
+  const [authTab, setAuthTab] = useState<'login' | 'register' | 'forgot_password'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [needsConsoleEnable, setNeedsConsoleEnable] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -70,6 +72,7 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setSuccessMsg(null);
     setNeedsConsoleEnable(false);
 
     if (!email.trim() || password.length < 6) {
@@ -103,6 +106,39 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
         setErrorMsg('This email is already registered. Switch to Sign In instead.');
       } else {
         setErrorMsg(err instanceof Error ? err.message : 'Authentication failed.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setNeedsConsoleEnable(false);
+
+    if (!email.trim()) {
+      setErrorMsg('Please enter your email address to receive the password reset link.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await resetUserPassword(email);
+      setSuccessMsg(
+        `Password reset email sent to ${email.trim()}! Please check your inbox and spam folder.`
+      );
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/user-not-found') {
+        setErrorMsg('No account found with this email address.');
+      } else if (code === 'auth/invalid-email') {
+        setErrorMsg('Please enter a valid email address.');
+      } else if (code === 'auth/too-many-requests') {
+        setErrorMsg('Too many reset requests. Please wait a few minutes before trying again.');
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to send password reset email.');
       }
     } finally {
       setSubmitting(false);
@@ -268,6 +304,7 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
                 onClick={() => {
                   setAuthTab('login');
                   setErrorMsg(null);
+                  setSuccessMsg(null);
                 }}
                 className={`py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                   authTab === 'login'
@@ -282,6 +319,7 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
                 onClick={() => {
                   setAuthTab('register');
                   setErrorMsg(null);
+                  setSuccessMsg(null);
                 }}
                 className={`py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                   authTab === 'register'
@@ -293,98 +331,185 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
               </button>
             </div>
 
-            {/* Email / Password Form */}
-            <form onSubmit={handleEmailSubmit} className="space-y-3">
-              {authTab === 'register' && (
+            {/* Forgot Password Mode View */}
+            {authTab === 'forgot_password' ? (
+              <form onSubmit={handleResetPasswordSubmit} className="space-y-3">
+                <div className="p-3 rounded-xl bg-purple-950/60 border border-purple-400/30 text-xs text-[#D6CBE2] space-y-1">
+                  <h4 className="font-bold text-[#F6C915]">Reset Your Password</h4>
+                  <p className="text-[11px] leading-relaxed">
+                    Enter the email address associated with your account. We will send you an official Firebase password reset link.
+                  </p>
+                </div>
+
                 <div>
                   <label className="block text-xs text-[#D6CBE2] mb-1">
-                    Player Display Name
+                    Email Address
                   </label>
                   <div className="relative">
-                    <UserIcon className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
+                    <Mail className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
-                      type="text"
-                      maxLength={MAX_DISPLAY_NAME_LENGTH}
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder="Puzzle Seeker"
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="seeker@example.com"
                       className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
                     />
                   </div>
                 </div>
-              )}
 
-              <div>
-                <label className="block text-xs text-[#D6CBE2] mb-1">
-                  Email Address
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="seeker@example.com"
-                    className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
-                  />
-                </div>
-              </div>
+                {successMsg && (
+                  <div className="p-3 rounded-xl bg-emerald-950/70 border border-emerald-400/40 text-xs text-emerald-200 flex items-start gap-2 animate-pop">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>{successMsg}</span>
+                  </div>
+                )}
 
-              <div>
-                <label className="block text-xs text-[#D6CBE2] mb-1">
-                  Password (min. 6 characters)
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
-                  />
-                </div>
-              </div>
-
-              {errorMsg && (
-                <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-400/40 text-xs text-rose-200 space-y-1.5">
-                  <div className="flex items-start gap-2">
+                {errorMsg && (
+                  <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-400/40 text-xs text-rose-200 flex items-start gap-2 animate-pop">
                     <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                     <span>{errorMsg}</span>
                   </div>
-                  {needsConsoleEnable && (
-                    <div className="pl-6 text-[11px] text-rose-100/90 space-y-1">
-                      <p>
-                        To use Email/Password authentication, enable the Email/Password provider in your Firebase Console:
-                      </p>
-                      <a
-                        href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/providers`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-block text-[#F6C915] underline font-semibold"
-                      >
-                        Open Firebase Auth Providers Console →
-                      </a>
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
 
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full py-2.5 rounded-xl bg-gradient-to-b from-[#FFE566] to-[#E5B012] text-[#1D0830] font-display font-bold text-xs tracking-wide hover:brightness-105 transition-all cursor-pointer disabled:opacity-60"
-              >
-                {submitting
-                  ? 'Please wait...'
-                  : authTab === 'register'
-                    ? 'Create Account & Sync Scores'
-                    : 'Sign In with Email'}
-              </button>
-            </form>
+                <button
+                  type="submit"
+                  disabled={submitting || !email.trim()}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-b from-[#FFE566] to-[#E5B012] text-[#1D0830] font-display font-bold text-xs tracking-wide hover:brightness-105 transition-all cursor-pointer disabled:opacity-60"
+                >
+                  {submitting ? 'Sending Link...' : 'Send Password Reset Email'}
+                </button>
+
+                <div className="text-center pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthTab('login');
+                      setErrorMsg(null);
+                      setSuccessMsg(null);
+                    }}
+                    className="text-xs text-[#E6BE5A] underline hover:text-[#F6C915] cursor-pointer"
+                  >
+                    ← Back to Sign In
+                  </button>
+                </div>
+              </form>
+            ) : (
+              /* Email / Password Form */
+              <form onSubmit={handleEmailSubmit} className="space-y-3">
+                {authTab === 'register' && (
+                  <div>
+                    <label className="block text-xs text-[#D6CBE2] mb-1">
+                      Player Display Name
+                    </label>
+                    <div className="relative">
+                      <UserIcon className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        maxLength={MAX_DISPLAY_NAME_LENGTH}
+                        value={displayName}
+                        onChange={(e) => setDisplayName(e.target.value)}
+                        placeholder="Puzzle Seeker"
+                        className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs text-[#D6CBE2] mb-1">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="seeker@example.com"
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs text-[#D6CBE2]">
+                      Password (min. 6 characters)
+                    </label>
+                    {authTab === 'login' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthTab('forgot_password');
+                          setErrorMsg(null);
+                          setSuccessMsg(null);
+                        }}
+                        className="text-[11px] text-[#F6C915] underline hover:text-white cursor-pointer font-medium"
+                      >
+                        Forgot password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-[#9E8BB5] absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-black/40 border border-white/15 text-xs text-white placeholder-[#8A759E] focus:outline-none focus:border-[#F6C915]"
+                    />
+                  </div>
+                </div>
+
+                {successMsg && (
+                  <div className="p-3 rounded-xl bg-emerald-950/70 border border-emerald-400/40 text-xs text-emerald-200 flex items-start gap-2 animate-pop">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>{successMsg}</span>
+                  </div>
+                )}
+
+                {errorMsg && (
+                  <div className="p-3 rounded-xl bg-rose-950/70 border border-rose-400/40 text-xs text-rose-200 space-y-1.5">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <span>{errorMsg}</span>
+                    </div>
+                    {needsConsoleEnable && (
+                      <div className="pl-6 text-[11px] text-rose-100/90 space-y-1">
+                        <p>
+                          To use Email/Password authentication, enable the Email/Password provider in your Firebase Console:
+                        </p>
+                        <a
+                          href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/providers`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block text-[#F6C915] underline font-semibold"
+                        >
+                          Open Firebase Auth Providers Console →
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full py-2.5 rounded-xl bg-gradient-to-b from-[#FFE566] to-[#E5B012] text-[#1D0830] font-display font-bold text-xs tracking-wide hover:brightness-105 transition-all cursor-pointer disabled:opacity-60"
+                >
+                  {submitting
+                    ? 'Please wait...'
+                    : authTab === 'register'
+                      ? 'Create Account & Sync Scores'
+                      : 'Sign In with Email'}
+                </button>
+              </form>
+            )}
           </div>
         )}
       </div>

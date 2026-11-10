@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   updateProfile,
   signOut,
   onAuthStateChanged,
@@ -138,6 +139,14 @@ export async function registerWithEmailPassword(
   const cleanName = displayName.trim().slice(0, MAX_DISPLAY_NAME_LENGTH) || 'Puzzle Seeker';
   await updateProfile(res.user, { displayName: cleanName });
   return res.user;
+}
+
+export async function resetUserPassword(email: string): Promise<void> {
+  const cleanEmail = email.trim();
+  if (!cleanEmail) {
+    throw new Error('Please provide a valid email address.');
+  }
+  await sendPasswordResetEmail(auth, cleanEmail);
 }
 
 export async function logoutUser(): Promise<void> {

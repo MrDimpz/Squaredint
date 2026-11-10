@@ -40,11 +40,20 @@ import { WordListPanel } from './components/WordListPanel';
 import { TitleScreen, PauseOrVictoryModal } from './components/GameModals';
 import { DateCalendarDropdown } from './components/DateCalendarDropdown';
 import { TikTokConnectModal } from './components/TikTokConnectModal';
+import { AuthHighScoresModal } from './components/AuthHighScoresModal';
 import {
   TikTokLeaderboardPanel,
   LeaderboardPlayer,
   LiveFeedItem,
 } from './components/TikTokLeaderboardPanel';
+import {
+  auth,
+  onAuthStateChanged,
+  User,
+  HighScoreRecord,
+  subscribeToUserHighScores,
+  saveHighScoreToFirestore,
+} from './utils/firebase';
 import { io, Socket } from 'socket.io-client';
 
 type GameState = 'TITLE_MENU' | 'PLAYING' | 'PAUSED' | 'VICTORY';
@@ -94,6 +103,28 @@ export default function App() {
   const [liveFeed, setLiveFeed] = useState<LiveFeedItem[]>([]);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState<boolean>(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
+  // Firebase Authentication & High Scores State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [highScores, setHighScores] = useState<HighScoreRecord[]>([]);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (usr) => {
+      setCurrentUser(usr);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setHighScores([]);
+      return;
+    }
+    const unsubscribe = subscribeToUserHighScores(currentUser.uid, (scores) => {
+      setHighScores(scores);
+    });
+    return () => unsubscribe();
+  }, [currentUser?.uid]);
 
   // Board Dark / Light mode toggle state (affects the game board and tiles rather than the whole page)
   const [boardDarkMode, setBoardDarkMode] = useState<boolean>(() => {
@@ -490,14 +521,20 @@ export default function App() {
             if (matchingPaths.length > 0) {
               const def = await fetchWordDefinition(candidate);
               if (def) {
+                const bonusPts = calculateWordScore(candidate);
                 matchedWord = candidate;
-                matchedPoints = 1;
+                matchedPoints = bonusPts;
                 soundEngine.playBonusWord();
                 setBonusWords((prev) => (prev.includes(candidate) ? prev : [candidate, ...prev]));
-                setScore((prev) => prev + 1);
+                setScore((prev) => prev + bonusPts);
                 setHintedPath(matchingPaths[0]);
                 setTimeout(() => setHintedPath(null), 2000);
-                toastFn(`${cleanNick} found bonus ${candidate}!`, 'purple', '+1 Bonus pt', pfp);
+                toastFn(
+                  `${cleanNick} found bonus ${candidate}!`,
+                  'purple',
+                  `+${bonusPts} ${bonusPts === 1 ? 'Bonus pt' : 'Bonus pts'}`,
+                  pfp
+                );
 
                 setLeaderboard((prev) => {
                   const existingIdx = prev.findIndex((p) => p.id === uniqueId);
@@ -508,10 +545,10 @@ export default function App() {
                       ...ex,
                       nickname: cleanNick,
                       profilePictureUrl: pfp || ex.profilePictureUrl,
-                      score: ex.score + 1,
+                      score: ex.score + bonusPts,
                       bonusWords: ex.bonusWords + 1,
                       lastWord: candidate,
-                      lastWordPoints: 1,
+                      lastWordPoints: bonusPts,
                       updatedAt: Date.now(),
                     };
                     updated = [...prev];
@@ -521,12 +558,12 @@ export default function App() {
                       id: uniqueId,
                       nickname: cleanNick,
                       profilePictureUrl: pfp,
-                      score: 1,
+                      score: bonusPts,
                       wordsFound: 0,
                       bonusWords: 1,
                       featuredFound: false,
                       lastWord: candidate,
-                      lastWordPoints: 1,
+                      lastWordPoints: bonusPts,
                       updatedAt: Date.now(),
                     };
                     updated = [newPlayer, ...prev];
@@ -611,17 +648,33 @@ export default function App() {
   }, [handleIncomingChatMessage, showToast]);
 
   const handleConnectTikTok = useCallback(
-    (username: string) => {
-      const clean = username.trim().replace(/^@+/, '');
-      if (!clean) return;
+    (username: string, isTestMode?: boolean) => {
+      const clean = username.trim().replace(/^@+/, '') || 'test_streamer';
       setTiktokUsername(clean);
       setTiktokError(null);
-      socket?.emit('connect-tiktok', clean);
+      try {
+        localStorage.setItem('missing_piece_tiktok_username', clean);
+      } catch {
+        // ignore
+      }
+
+      if (isTestMode) {
+        setIsLiveConnected(true);
+        setRoomId('TEST_SIMULATION_ROOM');
+        showToast(
+          `Test Mode Active: Connected as @${clean}`,
+          'gold',
+          'Leaderboard & Chat Feed active for manual testing!'
+        );
+      } else {
+        socket?.emit('connect-tiktok', clean);
+        showToast(`Connecting @${clean} to TikTok LIVE...`, 'neutral');
+      }
+
       setIsConnectModalOpen(false);
       if (gameState === 'TITLE_MENU') {
         setGameState('PLAYING');
       }
-      showToast(`Connecting @${clean} to TikTok LIVE...`, 'neutral');
     },
     [socket, gameState, showToast]
   );
@@ -696,6 +749,19 @@ export default function App() {
         // Automatically fetch live definition for the newly discovered word
         handleInspectWord(word);
 
+        if (currentUser) {
+          saveHighScoreToFirestore({
+            user: currentUser,
+            puzzleId: basePuzzle.id,
+            mode,
+            score: nextScore,
+            wordsFound: nextFound.size,
+            totalWords: requiredWords.size,
+            bonusWordsCount: bonusWords.length,
+            foundFeatured: Boolean(nextFound.has(basePuzzle.featuredWord)),
+          });
+        }
+
         // Check if 100% of required words are now uncovered
         if (nextFound.size === requiredWords.size) {
           setTimeout(() => {
@@ -716,12 +782,17 @@ export default function App() {
       // 3. Query fast Dictionary API to verify if it's a valid English Bonus Word
       const def = await fetchWordDefinition(word);
       if (def) {
+        const bonusPts = calculateWordScore(word);
         soundEngine.playBonusWord();
         setBonusWords((prev) => [word, ...prev]);
-        setScore((prev) => prev + 1);
+        setScore((prev) => prev + bonusPts);
         setInspectedWord(word);
         setSelectedWordDef(def);
-        showToast(`Bonus Word: ${word}`, 'purple', '+1 Bonus pt · Dictionary Verified');
+        showToast(
+          `Bonus Word: ${word}`,
+          'purple',
+          `+${bonusPts} ${bonusPts === 1 ? 'Bonus pt' : 'Bonus pts'} · Dictionary Verified`
+        );
       } else {
         soundEngine.playInvalid();
         setShakeTrigger((prev) => prev + 1);
@@ -874,6 +945,7 @@ export default function App() {
           totalRequired={requiredWords.size}
           bonusCount={bonusWords.length}
           foundFeatured={foundFeatured}
+          leaderboard={leaderboard}
           onResume={() => setGameState('PLAYING')}
           onNewSeededBoard={() => {
             handleStepPreviousDate();
@@ -900,6 +972,18 @@ export default function App() {
         onConnect={handleConnectTikTok}
         onDisconnect={handleDisconnectTikTok}
         onOpenSimulator={() => setIsSimulatorOpen(true)}
+        onSimulateChat={handleSimulateChat}
+        sampleUnfoundWord={sampleUnfoundWord}
+      />
+
+      {/* Firebase Account & High Scores Modal */}
+      <AuthHighScoresModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        user={currentUser}
+        highScores={highScores}
+        currentScore={score}
+        currentPuzzleTitle={`Daily Puzzle #${basePuzzle.puzzleNumber}`}
       />
 
       {/* Perimeter Game HUD Header */}
@@ -992,7 +1076,7 @@ export default function App() {
               ))}
             </div>
 
-            {/* TikTok Stream Connect Button (Replaces Sign In) */}
+            {/* TikTok Stream Connect Button */}
             <button
               type="button"
               onClick={() => setIsConnectModalOpen(true)}
@@ -1004,7 +1088,7 @@ export default function App() {
               title={
                 isLiveConnected
                   ? `Connected to TikTok LIVE as @${tiktokUsername.replace(/^@+/, '')}`
-                  : 'Connect your TikTok LIVE stream'
+                  : 'Connect your TikTok LIVE stream or start Test Mode'
               }
             >
               <Radio
@@ -1016,6 +1100,27 @@ export default function App() {
                 {isLiveConnected
                   ? `LIVE · @${tiktokUsername.replace(/^@+/, '')}`
                   : 'Connect'}
+              </span>
+            </button>
+
+            {/* Player Account / High Scores Button */}
+            <button
+              type="button"
+              onClick={() => setIsAuthModalOpen(true)}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                currentUser
+                  ? 'bg-purple-950/80 border-purple-400/60 text-purple-200'
+                  : 'bg-white/8 hover:bg-white/15 border-white/10 text-[#D6CBE2] hover:text-white'
+              }`}
+              title={
+                currentUser
+                  ? `Account: ${currentUser.displayName || currentUser.email}`
+                  : 'Sign In / Account High Scores'
+              }
+            >
+              <Trophy className="w-4 h-4 text-[#F6C915]" />
+              <span className="hidden sm:inline">
+                {currentUser ? (currentUser.displayName || 'Account') : 'Account'}
               </span>
             </button>
 
