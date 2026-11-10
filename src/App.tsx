@@ -39,15 +39,13 @@ import { WordGridBoard } from './components/WordGridBoard';
 import { WordListPanel } from './components/WordListPanel';
 import { TitleScreen, PauseOrVictoryModal } from './components/GameModals';
 import { DateCalendarDropdown } from './components/DateCalendarDropdown';
-import {
-  TikTokConnectModal,
-  TikTokConnectionConfig,
-} from './components/TikTokConnectModal';
+import { TikTokConnectModal } from './components/TikTokConnectModal';
 import {
   TikTokLeaderboardPanel,
   LeaderboardPlayer,
-  LiveChatEvent,
+  LiveFeedItem,
 } from './components/TikTokLeaderboardPanel';
+import { io, Socket } from 'socket.io-client';
 
 type GameState = 'TITLE_MENU' | 'PLAYING' | 'PAUSED' | 'VICTORY';
 
@@ -74,56 +72,28 @@ function getLocalTodayString(): string {
   return `${y}-${m}-${d}`;
 }
 
-function generateRandomStreamKey(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  let suffix = '';
-  for (let i = 0; i < 16; i++) {
-    suffix += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return `ttk_live_${suffix}`;
-}
-
 export default function App() {
   const todayDateStr = useMemo(() => getLocalTodayString(), []);
   const [gameState, setGameState] = useState<GameState>('TITLE_MENU');
   const [mode, setMode] = useState<GameModeId>('daily-4x4');
   const [selectedDateStr, setSelectedDateStr] = useState<string>(todayDateStr);
 
-  // TikTok Live Stream Connection & Leaderboard State
-  const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
-  const [tiktokConfig, setTiktokConfig] = useState<TikTokConnectionConfig>(() => {
-    try {
-      const saved = localStorage.getItem('missing_piece_tiktok_config');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.streamKey && parsed.hostWebsiteUrl) {
-          return {
-            tiktokHandle: parsed.tiktokHandle || '',
-            streamKey: parsed.streamKey,
-            hostWebsiteUrl: parsed.hostWebsiteUrl,
-          };
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return {
-      tiktokHandle: '',
-      streamKey: generateRandomStreamKey(),
-      hostWebsiteUrl: window.location.origin,
-    };
-  });
-
+  // TikTok Live Socket & Interactive State
+  const [socket, setSocket] = useState<Socket | null>(null);
   const [isLiveConnected, setIsLiveConnected] = useState<boolean>(false);
-  const [connectionMode, setConnectionMode] = useState<'tiktok_direct' | 'stream_key_bridge'>(
-    'stream_key_bridge'
-  );
-  const [liveStatusMessage, setLiveStatusMessage] = useState<string>('');
+  const [tiktokUsername, setTiktokUsername] = useState<string>(() => {
+    try {
+      return localStorage.getItem('missing_piece_tiktok_username') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [tiktokError, setTiktokError] = useState<string | null>(null);
+  const [roomId, setRoomId] = useState<string>('');
   const [leaderboard, setLeaderboard] = useState<LeaderboardPlayer[]>([]);
-  const [recentChat, setRecentChat] = useState<LiveChatEvent[]>([]);
-
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
+  const [liveFeed, setLiveFeed] = useState<LiveFeedItem[]>([]);
+  const [isSimulatorOpen, setIsSimulatorOpen] = useState<boolean>(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
 
   // Board Dark / Light mode toggle state (affects the game board and tiles rather than the whole page)
   const [boardDarkMode, setBoardDarkMode] = useState<boolean>(() => {
@@ -326,6 +296,7 @@ export default function App() {
   );
 
   // Keep latest puzzle & word refs for WebSocket event handler
+  // Keep latest puzzle & word refs for socket event handlers
   const puzzleStateRef = useRef({
     basePuzzle,
     grid,
@@ -333,7 +304,6 @@ export default function App() {
     foundWords,
     bonusWords,
     score,
-    tiktokConfig,
     handleRotateBoard,
     handleUseHint,
     showToast,
@@ -347,7 +317,6 @@ export default function App() {
       foundWords,
       bonusWords,
       score,
-      tiktokConfig,
       handleRotateBoard,
       handleUseHint,
       showToast,
@@ -359,376 +328,322 @@ export default function App() {
     foundWords,
     bonusWords,
     score,
-    tiktokConfig,
     handleRotateBoard,
     handleUseHint,
     showToast,
   ]);
 
-  // Process a viewer's TikTok chat event against the active puzzle board
-  const processViewerChatEvent = useCallback(async (chatEvt: LiveChatEvent) => {
-    const {
-      basePuzzle: curPuzzle,
-      grid: curGrid,
-      requiredWords: curRequired,
-      foundWords: curFound,
-      bonusWords: curBonus,
-      tiktokConfig: curConfig,
-      handleRotateBoard: rotateFn,
-      handleUseHint: hintFn,
-      showToast: toastFn,
-    } = puzzleStateRef.current;
+  // Handle incoming chat messages from TikTok LIVE or simulator
+  const handleIncomingChatMessage = useCallback(
+    async (data: { uniqueId: string; nickname: string; comment: string; profilePictureUrl: string }) => {
+      const {
+        basePuzzle: curPuzzle,
+        grid: curGrid,
+        requiredWords: curRequired,
+        foundWords: curFound,
+        bonusWords: curBonus,
+        handleRotateBoard: rotateFn,
+        handleUseHint: hintFn,
+        showToast: toastFn,
+      } = puzzleStateRef.current;
 
-    const cleanNickname = chatEvt.nickname.replace(/^@+/, '') || 'TikTok Viewer';
-    const rawComment = chatEvt.comment.trim();
-    const lowerComment = rawComment.toLowerCase();
+      const uniqueId = data.uniqueId || 'viewer';
+      const cleanNick = (data.nickname || uniqueId).replace(/^@+/, '') || 'Player';
+      const rawComment = (data.comment || '').trim();
+      if (!rawComment) return;
+      const lowerComment = rawComment.toLowerCase();
+      const pfp = data.profilePictureUrl || '';
 
-    setRecentChat((prev) => {
-      if (prev.some((e) => e.id === chatEvt.id)) return prev;
-      return [chatEvt, ...prev.slice(0, 29)];
-    });
-
-    // Support chat commands !rotate and !hint
-    if (lowerComment === '!rotate' || lowerComment === 'rotate') {
-      rotateFn();
-      toastFn(`${cleanNickname} rotated the board!`, 'purple', '90° Clockwise', chatEvt.profilePictureUrl);
-      return;
-    }
-    if (lowerComment === '!hint' || lowerComment === 'hint') {
-      hintFn();
-      return;
-    }
-
-    // Extract candidate 4+ letter words from the viewer's comment
-    const candidateWords = rawComment.toUpperCase().match(/[A-Z]{4,15}/g);
-    if (!candidateWords || candidateWords.length === 0) return;
-
-    for (const candidate of candidateWords) {
-      // 1. Check if candidate is an unfound Required Word on the current board
-      if (curRequired.has(candidate)) {
-        if (curFound.has(candidate)) {
-          continue;
-        }
-
-        const entry = curRequired.get(candidate)!;
-        setFoundWords((prev) => {
-          if (prev.has(candidate)) return prev;
-          const next = new Set(prev);
-          next.add(candidate);
-          if (next.size === curRequired.size) {
-            setTimeout(() => {
-              soundEngine.playVictory();
-              setGameState('VICTORY');
-            }, 650);
-          }
-          return next;
-        });
-
-        setScore((prev) => prev + entry.points);
-        setHintedPath(entry.path);
-        setTimeout(() => setHintedPath(null), 2200);
-
-        if (entry.isFeatured) {
-          soundEngine.playWordFound(candidate.length, true);
-          toastFn(
-            `★ ${cleanNickname} found ${candidate}!`,
-            'gold',
-            `+${entry.points} pts (Missing Piece Bonus)`,
-            chatEvt.profilePictureUrl
-          );
-        } else {
-          soundEngine.playWordFound(candidate.length, false);
-          toastFn(
-            `${cleanNickname} found ${candidate}!`,
-            candidate.length >= 6 ? 'gold' : 'emerald',
-            `+${entry.points} ${entry.points === 1 ? 'pt' : 'pts'}`,
-            chatEvt.profilePictureUrl
-          );
-        }
-
-        // Send authoritative score mutation to server via WebSocket or HTTP
-        const wordPayload = {
-          type: 'player:word_found',
-          streamKey: curConfig.streamKey,
-          puzzleId: curPuzzle.id,
-          playerId: chatEvt.playerId,
-          nickname: cleanNickname,
-          profilePictureUrl: chatEvt.profilePictureUrl,
-          word: candidate,
-          points: entry.points,
-          isBonus: false,
-          isFeatured: Boolean(entry.isFeatured),
-        };
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify(wordPayload));
-        } else {
-          fetch('/api/tiktok/word-found', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(wordPayload),
-          })
-            .then((r) => r.json())
-            .then((st) => {
-              if (st?.leaderboard) setLeaderboard(st.leaderboard);
-            })
-            .catch(() => {});
-        }
+      // Support chat commands !rotate and !hint
+      if (lowerComment === '!rotate' || lowerComment === 'rotate') {
+        rotateFn();
+        toastFn(`${cleanNick} rotated the board!`, 'purple', '90° Clockwise', pfp);
+        setLiveFeed((prev) => [
+          {
+            id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            type: 'chat',
+            uniqueId,
+            nickname: cleanNick,
+            profilePictureUrl: pfp,
+            comment: rawComment,
+            isCommand: true,
+            timestamp: Date.now(),
+          },
+          ...prev.slice(0, 49),
+        ]);
         return;
       }
 
-      // 2. Check if candidate is a valid 4+ letter Bonus Word traceable on the grid
-      if (!curBonus.includes(candidate)) {
-        const matchingPaths = findPathsForInput(curGrid, curPuzzle.size, candidate);
-        if (matchingPaths.length > 0) {
-          const def = await fetchWordDefinition(candidate);
-          if (def) {
-            soundEngine.playBonusWord();
-            setBonusWords((prev) => (prev.includes(candidate) ? prev : [candidate, ...prev]));
-            setScore((prev) => prev + 1);
-            setHintedPath(matchingPaths[0]);
-            setTimeout(() => setHintedPath(null), 2000);
-            toastFn(
-              `${cleanNickname} found bonus ${candidate}!`,
-              'purple',
-              '+1 Bonus pt',
-              chatEvt.profilePictureUrl
-            );
+      if (lowerComment === '!hint' || lowerComment === 'hint') {
+        hintFn();
+        setLiveFeed((prev) => [
+          {
+            id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            type: 'chat',
+            uniqueId,
+            nickname: cleanNick,
+            profilePictureUrl: pfp,
+            comment: rawComment,
+            isCommand: true,
+            timestamp: Date.now(),
+          },
+          ...prev.slice(0, 49),
+        ]);
+        return;
+      }
 
-            const bonusPayload = {
-              type: 'player:word_found',
-              streamKey: curConfig.streamKey,
-              puzzleId: curPuzzle.id,
-              playerId: chatEvt.playerId,
-              nickname: cleanNickname,
-              profilePictureUrl: chatEvt.profilePictureUrl,
-              word: candidate,
-              points: 1,
-              isBonus: true,
-              isFeatured: false,
-            };
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify(bonusPayload));
-            } else {
-              fetch('/api/tiktok/word-found', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(bonusPayload),
-              })
-                .then((r) => r.json())
-                .then((st) => {
-                  if (st?.leaderboard) setLeaderboard(st.leaderboard);
-                })
-                .catch(() => {});
+      // Check candidate words (4+ letters)
+      const candidateWords = rawComment.toUpperCase().match(/[A-Z]{4,15}/g);
+      let matchedWord: string | undefined;
+      let matchedPoints: number | undefined;
+
+      if (candidateWords && candidateWords.length > 0) {
+        for (const candidate of candidateWords) {
+          // 1. Required Word on current board
+          if (curRequired.has(candidate)) {
+            if (curFound.has(candidate)) {
+              continue;
             }
-            return;
+
+            const entry = curRequired.get(candidate)!;
+            matchedWord = candidate;
+            matchedPoints = entry.points;
+
+            setFoundWords((prev) => {
+              if (prev.has(candidate)) return prev;
+              const next = new Set(prev);
+              next.add(candidate);
+              if (next.size === curRequired.size) {
+                setTimeout(() => {
+                  soundEngine.playVictory();
+                  setGameState('VICTORY');
+                }, 650);
+              }
+              return next;
+            });
+
+            setScore((prev) => prev + entry.points);
+            setHintedPath(entry.path);
+            setTimeout(() => setHintedPath(null), 2200);
+
+            if (entry.isFeatured) {
+              soundEngine.playWordFound(candidate.length, true);
+              toastFn(
+                `★ ${cleanNick} found ${candidate}!`,
+                'gold',
+                `+${entry.points} pts (Missing Piece Bonus)`,
+                pfp
+              );
+            } else {
+              soundEngine.playWordFound(candidate.length, false);
+              toastFn(
+                `${cleanNick} found ${candidate}!`,
+                candidate.length >= 6 ? 'gold' : 'emerald',
+                `+${entry.points} ${entry.points === 1 ? 'pt' : 'pts'}`,
+                pfp
+              );
+            }
+
+            // Update player on leaderboard (nickname only, never @name)
+            setLeaderboard((prev) => {
+              const existingIdx = prev.findIndex((p) => p.id === uniqueId);
+              let updated: LeaderboardPlayer[];
+              if (existingIdx >= 0) {
+                const ex = prev[existingIdx];
+                const newPlayer: LeaderboardPlayer = {
+                  ...ex,
+                  nickname: cleanNick,
+                  profilePictureUrl: pfp || ex.profilePictureUrl,
+                  score: ex.score + entry.points,
+                  wordsFound: ex.wordsFound + 1,
+                  featuredFound: ex.featuredFound || Boolean(entry.isFeatured),
+                  lastWord: candidate,
+                  lastWordPoints: entry.points,
+                  updatedAt: Date.now(),
+                };
+                updated = [...prev];
+                updated[existingIdx] = newPlayer;
+              } else {
+                const newPlayer: LeaderboardPlayer = {
+                  id: uniqueId,
+                  nickname: cleanNick,
+                  profilePictureUrl: pfp,
+                  score: entry.points,
+                  wordsFound: 1,
+                  bonusWords: 0,
+                  featuredFound: Boolean(entry.isFeatured),
+                  lastWord: candidate,
+                  lastWordPoints: entry.points,
+                  updatedAt: Date.now(),
+                };
+                updated = [newPlayer, ...prev];
+              }
+              return updated.sort((a, b) => b.score - a.score || b.wordsFound - a.wordsFound);
+            });
+
+            break;
+          }
+
+          // 2. Bonus Word traceable on grid
+          if (!curBonus.includes(candidate)) {
+            const matchingPaths = findPathsForInput(curGrid, curPuzzle.size, candidate);
+            if (matchingPaths.length > 0) {
+              const def = await fetchWordDefinition(candidate);
+              if (def) {
+                matchedWord = candidate;
+                matchedPoints = 1;
+                soundEngine.playBonusWord();
+                setBonusWords((prev) => (prev.includes(candidate) ? prev : [candidate, ...prev]));
+                setScore((prev) => prev + 1);
+                setHintedPath(matchingPaths[0]);
+                setTimeout(() => setHintedPath(null), 2000);
+                toastFn(`${cleanNick} found bonus ${candidate}!`, 'purple', '+1 Bonus pt', pfp);
+
+                setLeaderboard((prev) => {
+                  const existingIdx = prev.findIndex((p) => p.id === uniqueId);
+                  let updated: LeaderboardPlayer[];
+                  if (existingIdx >= 0) {
+                    const ex = prev[existingIdx];
+                    const newPlayer: LeaderboardPlayer = {
+                      ...ex,
+                      nickname: cleanNick,
+                      profilePictureUrl: pfp || ex.profilePictureUrl,
+                      score: ex.score + 1,
+                      bonusWords: ex.bonusWords + 1,
+                      lastWord: candidate,
+                      lastWordPoints: 1,
+                      updatedAt: Date.now(),
+                    };
+                    updated = [...prev];
+                    updated[existingIdx] = newPlayer;
+                  } else {
+                    const newPlayer: LeaderboardPlayer = {
+                      id: uniqueId,
+                      nickname: cleanNick,
+                      profilePictureUrl: pfp,
+                      score: 1,
+                      wordsFound: 0,
+                      bonusWords: 1,
+                      featuredFound: false,
+                      lastWord: candidate,
+                      lastWordPoints: 1,
+                      updatedAt: Date.now(),
+                    };
+                    updated = [newPlayer, ...prev];
+                  }
+                  return updated.sort((a, b) => b.score - a.score || b.wordsFound - a.wordsFound);
+                });
+                break;
+              }
+            }
           }
         }
       }
-    }
-  }, []);
 
-  // Connect to WebSocket server when stream session is initiated
-  const connectToLiveStreamSocket = useCallback(
-    (cfg: TikTokConnectionConfig) => {
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-
-      try {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws?streamKey=${encodeURIComponent(
-          cfg.streamKey
-        )}`;
-
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          ws.send(
-            JSON.stringify({
-              type: 'session:connect',
-              tiktokHandle: cfg.tiktokHandle,
-              streamKey: cfg.streamKey,
-              hostWebsiteUrl: cfg.hostWebsiteUrl,
-            })
-          );
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'session:state' && data.state) {
-              setIsLiveConnected(Boolean(data.state.isConnected));
-              setConnectionMode(data.state.connectionMode || 'stream_key_bridge');
-              setLiveStatusMessage(data.state.statusMessage || '');
-              setLeaderboard(data.state.leaderboard || []);
-              if (Array.isArray(data.state.recentChat)) {
-                setRecentChat(data.state.recentChat);
-              }
-            } else if (data.type === 'tiktok:chat' && data.event) {
-              processViewerChatEvent(data.event as LiveChatEvent);
-            } else if (data.type === 'session:disconnected') {
-              setIsLiveConnected(false);
-            }
-          } catch {
-            // ignore parse error
-          }
-        };
-
-        ws.onerror = () => {
-          // Handled gracefully by REST fallback
-        };
-
-        ws.onclose = () => {
-          if (puzzleStateRef.current.tiktokConfig.tiktokHandle) {
-            reconnectTimerRef.current = window.setTimeout(() => {
-              connectToLiveStreamSocket(puzzleStateRef.current.tiktokConfig);
-            }, 4000);
-          }
-        };
-      } catch {
-        // Ignore WebSocket constructor error if blocked by proxy
-      }
+      setLiveFeed((prev) => [
+        {
+          id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          type: 'chat',
+          uniqueId,
+          nickname: cleanNick,
+          profilePictureUrl: pfp,
+          comment: rawComment,
+          matchedWord,
+          matchedPoints,
+          timestamp: Date.now(),
+        },
+        ...prev.slice(0, 49),
+      ]);
     },
-    [processViewerChatEvent]
+    []
   );
 
+  // Connect to persistent Socket.IO server (chat events only)
   useEffect(() => {
-    return () => {
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
-    };
-  }, []);
+    const newSocket = io();
+    setSocket(newSocket);
 
-  const handleConnectTikTok = useCallback(
-    (newConfig: TikTokConnectionConfig) => {
-      setTiktokConfig(newConfig);
+    newSocket.on('tiktok-connected', ({ username, roomId: rId }: { username: string; roomId?: string }) => {
+      setIsLiveConnected(true);
+      setTiktokUsername(username);
+      setRoomId(rId || '');
+      setTiktokError(null);
       try {
-        localStorage.setItem('missing_piece_tiktok_config', JSON.stringify(newConfig));
+        localStorage.setItem('missing_piece_tiktok_username', username);
       } catch {
         // ignore
       }
-      setIsLiveConnected(true);
-      setLiveStatusMessage(
-        `Connecting @${newConfig.tiktokHandle.replace(/^@+/, '')} with Stream Key...`
+      showToast(
+        `TikTok LIVE Connected: @${username}`,
+        'emerald',
+        'Leaderboard Active · Viewer chat guesses will register live'
       );
-      fetch('/api/tiktok/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newConfig),
-      })
-        .then((r) => r.json())
-        .then((st) => {
-          if (st?.statusMessage) setLiveStatusMessage(st.statusMessage);
-          if (st?.leaderboard) setLeaderboard(st.leaderboard);
-        })
-        .catch(() => {});
+    });
 
-      connectToLiveStreamSocket(newConfig);
+    newSocket.on('tiktok-status', (status: { connected: boolean; username: string; roomId: string }) => {
+      if (status) {
+        setIsLiveConnected(Boolean(status.connected));
+        if (status.username) setTiktokUsername(status.username);
+        if (status.roomId) setRoomId(status.roomId);
+      }
+    });
+
+    newSocket.on('tiktok-error', (msg: string) => {
+      setTiktokError(msg || 'Failed to connect to TikTok Live');
+      setIsLiveConnected(false);
+      showToast(msg || 'TikTok Live error', 'error');
+    });
+
+    newSocket.on('tiktok-disconnected', () => {
+      setIsLiveConnected(false);
+      setRoomId('');
+      showToast('Disconnected from TikTok LIVE', 'neutral');
+    });
+
+    // Actual chat messages only (likes & gifts ignored)
+    newSocket.on('chat-message', (data: any) => {
+      handleIncomingChatMessage(data);
+    });
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [handleIncomingChatMessage, showToast]);
+
+  const handleConnectTikTok = useCallback(
+    (username: string) => {
+      const clean = username.trim().replace(/^@+/, '');
+      if (!clean) return;
+      setTiktokUsername(clean);
+      setTiktokError(null);
+      socket?.emit('connect-tiktok', clean);
       setIsConnectModalOpen(false);
       if (gameState === 'TITLE_MENU') {
         setGameState('PLAYING');
       }
-      showToast(
-        `TikTok LIVE Connected: @${newConfig.tiktokHandle.replace(/^@+/, '')}`,
-        'emerald',
-        'Leaderboard Active · Viewers can type words in chat!'
-      );
+      showToast(`Connecting @${clean} to TikTok LIVE...`, 'neutral');
     },
-    [connectToLiveStreamSocket, gameState, showToast]
+    [socket, gameState, showToast]
   );
 
   const handleDisconnectTikTok = useCallback(() => {
-    if (reconnectTimerRef.current) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'session:disconnect',
-          streamKey: tiktokConfig.streamKey,
-        })
-      );
-      wsRef.current.onclose = null;
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    fetch('/api/tiktok/disconnect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamKey: tiktokConfig.streamKey }),
-    }).catch(() => {});
+    socket?.emit('disconnect-tiktok');
     setIsLiveConnected(false);
-    setLiveStatusMessage('');
-    showToast('Disconnected from TikTok LIVE', 'neutral', 'Switched back to Puzzle Lexicon');
-  }, [tiktokConfig.streamKey, showToast]);
+    setRoomId('');
+    showToast('Disconnected from TikTok LIVE', 'neutral');
+  }, [socket, showToast]);
 
   const handleResetLeaderboard = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'leaderboard:reset',
-          streamKey: tiktokConfig.streamKey,
-        })
-      );
-    }
-    fetch('/api/tiktok/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamKey: tiktokConfig.streamKey }),
-    })
-      .then((r) => r.json())
-      .then((st) => {
-        if (st?.leaderboard) setLeaderboard(st.leaderboard);
-        else setLeaderboard([]);
-      })
-      .catch(() => {
-        setLeaderboard([]);
-      });
-  }, [tiktokConfig.streamKey]);
+    setLeaderboard([]);
+    setLiveFeed([]);
+    showToast('Leaderboard scores reset', 'neutral');
+  }, [showToast]);
 
-  const handleSendTestWebhook = useCallback(
-    async (nickname: string, profilePictureUrl: string, comment: string) => {
-      const cleanNick = nickname.replace(/^@+/, '');
-      const wsOpen = wsRef.current && wsRef.current.readyState === WebSocket.OPEN;
-      await fetch('/api/tiktok/event', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-stream-key': tiktokConfig.streamKey,
-        },
-        body: JSON.stringify({
-          streamKey: tiktokConfig.streamKey,
-          nickname: cleanNick,
-          profilePictureUrl,
-          comment,
-        }),
-      });
-      // If WebSocket isn't open (e.g. proxy HTTP-only), process event directly on client
-      if (!wsOpen) {
-        await processViewerChatEvent({
-          id: `${Date.now()}_local`,
-          playerId: cleanNick.toLowerCase().replace(/[^a-z0-9]/g, '_'),
-          nickname: cleanNick,
-          profilePictureUrl,
-          comment,
-          timestamp: Date.now(),
-        });
-      }
+  const handleSimulateChat = useCallback(
+    (data: { uniqueId: string; nickname: string; comment: string; profilePictureUrl: string }) => {
+      socket?.emit('chat-message', data);
     },
-    [tiktokConfig.streamKey, processViewerChatEvent]
+    [socket]
   );
 
   // Submit a traced or typed path directly on the board
@@ -943,7 +858,7 @@ export default function App() {
           onStartGame={() => setGameState('PLAYING')}
           onOpenConnectModal={() => setIsConnectModalOpen(true)}
           isLiveConnected={isLiveConnected}
-          connectedHandle={tiktokConfig.tiktokHandle}
+          connectedHandle={tiktokUsername}
           dailyNumber={basePuzzle.puzzleNumber}
           dateLabel={basePuzzle.dateLabel}
         />
@@ -974,19 +889,17 @@ export default function App() {
         />
       )}
 
-      {/* TikTok LIVE Stream Connect Modal (Streamer @, Stream Key & Hosted Website) */}
+      {/* TikTok LIVE Stream Connect Modal */}
       <TikTokConnectModal
         isOpen={isConnectModalOpen}
         onClose={() => setIsConnectModalOpen(false)}
         isConnected={isLiveConnected}
-        connectionMode={connectionMode}
-        statusMessage={liveStatusMessage}
-        config={tiktokConfig}
+        tiktokUsername={tiktokUsername}
+        tiktokError={tiktokError}
+        roomId={roomId}
         onConnect={handleConnectTikTok}
         onDisconnect={handleDisconnectTikTok}
-        onRegenerateKey={generateRandomStreamKey}
-        onSendTestWebhook={handleSendTestWebhook}
-        sampleUnfoundWord={sampleUnfoundWord}
+        onOpenSimulator={() => setIsSimulatorOpen(true)}
       />
 
       {/* Perimeter Game HUD Header */}
@@ -1085,23 +998,23 @@ export default function App() {
               onClick={() => setIsConnectModalOpen(true)}
               className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 isLiveConnected
-                  ? 'bg-emerald-950/80 border-emerald-400/60 text-emerald-300 shadow-[0_0_14px_rgba(16,185,129,0.25)]'
+                  ? 'bg-rose-950/80 border-rose-400/60 text-rose-300 shadow-[0_0_14px_rgba(244,63,94,0.3)]'
                   : 'bg-white/10 hover:bg-white/15 border-[#E6BE5A]/40 text-[#F6C915]'
               }`}
               title={
                 isLiveConnected
-                  ? `Connected to TikTok LIVE as @${tiktokConfig.tiktokHandle.replace(/^@+/, '')}`
-                  : 'Connect your TikTok @ handle, stream key, and hosted website'
+                  ? `Connected to TikTok LIVE as @${tiktokUsername.replace(/^@+/, '')}`
+                  : 'Connect your TikTok LIVE stream'
               }
             >
               <Radio
                 className={`w-4 h-4 ${
-                  isLiveConnected ? 'text-emerald-400 animate-pulse' : 'text-[#F6C915]'
+                  isLiveConnected ? 'text-rose-400 animate-pulse' : 'text-[#F6C915]'
                 }`}
               />
               <span>
                 {isLiveConnected
-                  ? `LIVE · @${tiktokConfig.tiktokHandle.replace(/^@+/, '')}`
+                  ? `LIVE · @${tiktokUsername.replace(/^@+/, '')}`
                   : 'Connect'}
               </span>
             </button>
@@ -1229,10 +1142,12 @@ export default function App() {
       </div>
 
       {/* Main Playfield Split Layout */}
-      <main className="flex-1 min-h-0 max-w-6xl w-full mx-auto px-4 sm:px-6 py-3 sm:py-5 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+      <main className="flex-1 min-h-0 max-w-7xl w-full mx-auto px-3 sm:px-6 py-2.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5 items-stretch">
         {/* Left/Center Column: Active Word Readout + Tactile Grid + Action Bar */}
         <section
-          className={`lg:col-span-6 xl:col-span-6 flex flex-col items-center justify-between min-h-0 ${
+          className={`${
+            isLiveConnected ? 'lg:col-span-5 xl:col-span-5' : 'lg:col-span-6 xl:col-span-6'
+          } flex flex-col items-center justify-between min-h-0 ${
             mobileTab === 'words' ? 'hidden lg:flex' : 'flex'
           }`}
         >
@@ -1392,24 +1307,29 @@ export default function App() {
           </div>
         </section>
 
-        {/* Right Column: Replaces Words Found Board with Live Player Leaderboard when TikTok LIVE is connected */}
+        {/* Right Column: Replaces Words Found Board with Live Player Leaderboard & Live Chat Feed when TikTok LIVE is connected */}
         <section
-          className={`lg:col-span-6 xl:col-span-6 min-h-0 flex flex-col ${
+          className={`${
+            isLiveConnected ? 'lg:col-span-7 xl:col-span-7' : 'lg:col-span-6 xl:col-span-6'
+          } min-h-0 flex flex-col ${
             mobileTab === 'board' ? 'hidden lg:flex' : 'flex'
           }`}
         >
           {isLiveConnected ? (
             <TikTokLeaderboardPanel
-              tiktokHandle={tiktokConfig.tiktokHandle}
+              tiktokUsername={tiktokUsername}
+              isConnected={isLiveConnected}
               leaderboard={leaderboard}
-              recentChat={recentChat}
+              liveFeed={liveFeed}
               foundWordsCount={foundWords.size}
               totalRequiredWords={requiredWords.size}
               bonusWordsCount={bonusWords.length}
               sampleUnfoundWord={sampleUnfoundWord}
+              isSimulatorOpen={isSimulatorOpen}
+              onToggleSimulator={() => setIsSimulatorOpen((prev) => !prev)}
               onOpenConnectSettings={() => setIsConnectModalOpen(true)}
               onResetLeaderboard={handleResetLeaderboard}
-              onSendTestViewerWord={handleSendTestWebhook}
+              onSimulateChat={handleSimulateChat}
             />
           ) : (
             <WordListPanel

@@ -3,6 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <script>
+      (function() {
+        function shouldSuppress(msg) {
+          if (!msg || typeof msg !== 'string') return false;
+          return (
+            msg.includes('createWebSocketModuleRunnerTransport') ||
+            msg.includes('WebSocket') ||
+            msg.includes('vite') ||
+            msg.includes('vite:ws')
+          );
+        }
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var msg = (reason && (reason.message || reason.stack || String(reason))) || '';
+          if (shouldSuppress(msg)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+        window.addEventListener('error', function(event) {
+          var msg = (event && (event.message || (event.error && (event.error.message || event.error.stack)))) || '';
+          if (shouldSuppress(msg)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
     <title>The Missing Piece — Daily Word Grid Puzzle</title>
     <meta name="description" content="A tactile daily word-finding grid puzzle inspired by Squaredle and Squares.org. Swipe adjacent letters, uncover hidden words by length, and find your space." />
     <meta property="og:title" content="The Missing Piece — Daily Word Grid Puzzle" />
