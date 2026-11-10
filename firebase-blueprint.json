@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "HighScore": {
+      "title": "HighScore",
+      "description": "Represents a user's high score and completion stats for a specific puzzle board.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the authenticated player who achieved the score.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name or handle of the player (non-PII).",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "puzzleId": {
+          "type": "string",
+          "description": "Unique identifier of the puzzle (e.g., daily-4x4-2026-11-09).",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Puzzle grid mode.",
+          "enum": ["express-3x3", "daily-4x4", "royal-5x5"],
+          "maxLength": 20
+        },
+        "score": {
+          "type": "integer",
+          "description": "Highest score achieved by the player on this puzzle."
+        },
+        "wordsFound": {
+          "type": "integer",
+          "description": "Number of required words uncovered."
+        },
+        "totalWords": {
+          "type": "integer",
+          "description": "Total number of required words in the puzzle."
+        },
+        "bonusWordsCount": {
+          "type": "integer",
+          "description": "Number of bonus dictionary words uncovered."
+        },
+        "foundFeatured": {
+          "type": "boolean",
+          "description": "Whether the player uncovered the featured Missing Piece word."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the score record was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the score record was last updated."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "puzzleId",
+        "mode",
+        "score",
+        "wordsFound",
+        "totalWords",
+        "bonusWordsCount",
+        "foundFeatured",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/highscores/{scoreId}": {
+      "schema": {
+        "$ref": "#/entities/HighScore"
+      },
+      "description": "Stores verified player high scores per puzzle board."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Squared",
+  "description": "A tactile daily word-finding grid puzzle inspired by Squaredle and Squares.org. Swipe adjacent letters, uncover hidden words by length, and find your space.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

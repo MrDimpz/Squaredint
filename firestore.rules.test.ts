@@ -1,0 +1,202 @@
+/**
+ * Security Rules Verification Suite for The Missing Piece High Scores
+ * Verifies that all 12 "Dirty Dozen" adversarial payloads are rejected with PERMISSION_DENIED.
+ */
+
+export interface DirtyDozenTestCase {
+  id: number;
+  name: string;
+  operation: 'get' | 'list' | 'create' | 'update' | 'delete';
+  path: string;
+  authUid: string | null;
+  payload?: Record<string, unknown>;
+  expectedResult: 'PERMISSION_DENIED';
+}
+
+export const DIRTY_DOZEN_TESTS: DirtyDozenTestCase[] = [
+  {
+    id: 1,
+    name: 'Unauthenticated create attempt',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: null,
+    payload: {
+      userId: 'user1',
+      displayName: 'Player One',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: 42,
+      wordsFound: 15,
+      totalWords: 30,
+      bonusWordsCount: 2,
+      foundFeatured: true,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 2,
+    name: 'Identity spoofing on create (userId != request.auth.uid)',
+    operation: 'create',
+    path: '/highscores/victim_daily-4x4-2026-11-09',
+    authUid: 'attacker_uid',
+    payload: {
+      userId: 'victim_uid',
+      displayName: 'Spoofed',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: 50,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 3,
+    name: 'Shadow field injection (isVerified: true)',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      userId: 'user1',
+      displayName: 'Player One',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: 50,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+      isVerified: true,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 4,
+    name: 'ID poisoning with invalid characters',
+    operation: 'create',
+    path: '/highscores/invalid$id!@#',
+    authUid: 'user1',
+    payload: {},
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 5,
+    name: 'Oversized displayName string (> 60 chars)',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      userId: 'user1',
+      displayName: 'A'.repeat(120),
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: 50,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 6,
+    name: 'Invalid mode enum value',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      userId: 'user1',
+      displayName: 'Player One',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'extreme-10x10',
+      score: 50,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 7,
+    name: 'Negative score injection',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      userId: 'user1',
+      displayName: 'Player One',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: -10,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 8,
+    name: 'Forged client timestamp on create (createdAt != request.time)',
+    operation: 'create',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      userId: 'user1',
+      displayName: 'Player One',
+      puzzleId: 'daily-4x4-2026-11-09',
+      mode: 'daily-4x4',
+      score: 50,
+      wordsFound: 20,
+      totalWords: 30,
+      bonusWordsCount: 0,
+      foundFeatured: false,
+      createdAt: '2020-01-01T00:00:00Z',
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 9,
+    name: 'Immutable field mutation on update (changing puzzleId)',
+    operation: 'update',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      puzzleId: 'daily-4x4-2026-11-10',
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 10,
+    name: 'Score downgrade attack on update (incoming.score < existing.score)',
+    operation: 'update',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      score: 5,
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 11,
+    name: 'Value poisoning on update (score as string instead of int)',
+    operation: 'update',
+    path: '/highscores/user1_daily-4x4-2026-11-09',
+    authUid: 'user1',
+    payload: {
+      score: '9999',
+    },
+    expectedResult: 'PERMISSION_DENIED',
+  },
+  {
+    id: 12,
+    name: 'Cross-user read/list scraping attempt',
+    operation: 'get',
+    path: '/highscores/otheruser_daily-4x4-2026-11-09',
+    authUid: 'attacker_uid',
+    expectedResult: 'PERMISSION_DENIED',
+  },
+];

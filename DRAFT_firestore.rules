@@ -1,0 +1,127 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Pillar 2: Validation Blueprint for HighScore entity (synced with firebase-blueprint.json)
+    function isValidHighScore(data) {
+      return data.keys().hasAll([
+        'userId',
+        'displayName',
+        'puzzleId',
+        'mode',
+        'score',
+        'wordsFound',
+        'totalWords',
+        'bonusWordsCount',
+        'foundFeatured',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'userId',
+        'displayName',
+        'puzzleId',
+        'mode',
+        'score',
+        'wordsFound',
+        'totalWords',
+        'bonusWordsCount',
+        'foundFeatured',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.userId is string &&
+      data.userId.size() >= 1 &&
+      data.userId.size() <= 128 &&
+      data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.userId == request.auth.uid &&
+      data.displayName is string &&
+      data.displayName.size() >= 1 &&
+      data.displayName.size() <= 60 &&
+      data.puzzleId is string &&
+      data.puzzleId.size() >= 3 &&
+      data.puzzleId.size() <= 64 &&
+      data.puzzleId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.mode is string &&
+      data.mode.size() <= 20 &&
+      (data.mode == 'express-3x3' || data.mode == 'daily-4x4' || data.mode == 'royal-5x5') &&
+      data.score is int &&
+      data.score >= 0 &&
+      data.score <= 100000 &&
+      data.wordsFound is int &&
+      data.wordsFound >= 0 &&
+      data.wordsFound <= 500 &&
+      data.totalWords is int &&
+      data.totalWords >= 1 &&
+      data.totalWords <= 500 &&
+      data.wordsFound <= data.totalWords &&
+      data.bonusWordsCount is int &&
+      data.bonusWordsCount >= 0 &&
+      data.bonusWordsCount <= 500 &&
+      data.foundFeatured is bool &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    match /highscores/{scoreId} {
+      allow get: if isSignedIn() && isValidId(scoreId) && existing().userId == request.auth.uid;
+
+      // Pillar 8: Secure List Queries (enforces resource.data ownership)
+      allow list: if isSignedIn() && existing().userId == request.auth.uid;
+
+      allow create: if isSignedIn() &&
+        isValidId(scoreId) &&
+        isValidHighScore(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      // Action-Based Update Pattern with Validation Blueprint & Immortal Field Guards
+      allow update: if isSignedIn() &&
+        isValidId(scoreId) &&
+        isValidHighScore(incoming()) &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId &&
+        incoming().puzzleId == existing().puzzleId &&
+        incoming().mode == existing().mode &&
+        incoming().totalWords == existing().totalWords &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().score >= existing().score &&
+        (
+          // Action: RecordHigherScore
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'score',
+            'wordsFound',
+            'bonusWordsCount',
+            'foundFeatured',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isSignedIn() && isValidId(scoreId) && existing().userId == request.auth.uid;
+    }
+  }
+}
