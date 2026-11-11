@@ -11,7 +11,9 @@ import {
   Wand2,
   Send,
   User,
+  RefreshCw,
 } from 'lucide-react';
+import { getSafeAvatarUrl } from '../utils/avatar';
 
 interface TikTokConnectModalProps {
   isOpen: boolean;
@@ -21,6 +23,7 @@ interface TikTokConnectModalProps {
   tiktokError: string | null;
   roomId?: string;
   onConnect: (username: string, isTestMode?: boolean) => void;
+  onReconnect?: (username: string, isTestMode?: boolean) => void;
   onDisconnect: () => void;
   onOpenSimulator?: () => void;
   onSimulateChat?: (data: { uniqueId: string; nickname: string; comment: string; profilePictureUrl: string }) => void;
@@ -35,6 +38,7 @@ export const TikTokConnectModal: React.FC<TikTokConnectModalProps> = ({
   tiktokError,
   roomId,
   onConnect,
+  onReconnect,
   onDisconnect,
   onOpenSimulator,
   onSimulateChat,
@@ -84,7 +88,7 @@ export const TikTokConnectModal: React.FC<TikTokConnectModalProps> = ({
     if (!text) return;
     const nick = manualNickname.trim().replace(/^@+/, '') || 'Viewer_1';
     const uid = nick.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const pfp = `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(nick)}&backgroundColor=b6e3f4,c0aede,ffdfbf`;
+    const pfp = getSafeAvatarUrl(null, nick);
 
     if (onSimulateChat) {
       onSimulateChat({
@@ -184,14 +188,31 @@ export const TikTokConnectModal: React.FC<TikTokConnectModalProps> = ({
                 )}
               </div>
 
-              <button
-                type="button"
-                onClick={onDisconnect}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-xs font-semibold text-rose-200 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
-              >
-                <Unplug className="w-3.5 h-3.5" />
-                <span>Disconnect</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {onReconnect && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const clean =
+                        tiktokUsername.replace(/^@+/, '') || usernameInput.trim().replace(/^@+/, '');
+                      if (clean) onReconnect(clean, roomId?.includes('TEST'));
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 border border-[#F6C915]/40 text-xs font-semibold text-[#F6C915] cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+                    title="Force refresh of live connection"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Reconnect</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onDisconnect}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/40 text-xs font-semibold text-rose-200 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+                >
+                  <Unplug className="w-3.5 h-3.5" />
+                  <span>Disconnect</span>
+                </button>
+              </div>
             </div>
 
             {/* Manual Chat Entry Form when Connected */}
@@ -343,14 +364,30 @@ export const TikTokConnectModal: React.FC<TikTokConnectModalProps> = ({
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={isSubmitting || !usernameInput.trim()}
-              className="w-full py-3 rounded-xl bg-gradient-to-b from-[#FFE566] via-[#F6C915] to-[#D49B27] text-[#1D0830] font-display font-extrabold text-sm tracking-wide shadow-[0_8px_24px_rgba(246,201,21,0.35)] hover:brightness-105 active:scale-[0.99] transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              <Radio className="w-4 h-4 text-rose-600" />
-              <span>{isSubmitting ? 'Connecting to TikTok...' : 'Connect to Live Stream'}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={isSubmitting || !usernameInput.trim()}
+                className="flex-1 py-3 rounded-xl bg-gradient-to-b from-[#FFE566] via-[#F6C915] to-[#D49B27] text-[#1D0830] font-display font-extrabold text-sm tracking-wide shadow-[0_8px_24px_rgba(246,201,21,0.35)] hover:brightness-105 active:scale-[0.99] transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Radio className="w-4 h-4 text-rose-600" />
+                <span>{isSubmitting ? 'Connecting to TikTok...' : 'Connect to Live Stream'}</span>
+              </button>
+              {onReconnect && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const clean = usernameInput.trim().replace(/^@+/, '');
+                    if (clean) onReconnect(clean, false);
+                  }}
+                  className="px-3.5 py-3 rounded-xl bg-white/10 hover:bg-white/15 border border-[#F6C915]/50 text-[#F6C915] font-display font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shrink-0 transition-all"
+                  title="Force refresh of Socket.IO connection"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>Reconnect</span>
+                </button>
+              )}
+            </div>
           </form>
         )}
 

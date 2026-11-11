@@ -22,6 +22,7 @@ import {
   FIREBASE_PROJECT_ID,
   MAX_DISPLAY_NAME_LENGTH,
 } from '../utils/firebase';
+import { getSafeAvatarUrl, handleAvatarError } from '../utils/avatar';
 
 interface AuthHighScoresModalProps {
   isOpen: boolean;
@@ -181,19 +182,28 @@ export const AuthHighScoresModal: React.FC<AuthHighScoresModalProps> = ({
           <div className="space-y-4">
             {/* Signed-in Profile Strip */}
             <div className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-[#1E0533] border border-[#E6BE5A]/35">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>Cloud Sync Active</span>
-                </div>
-                <div className="font-display font-bold text-sm text-[#F5F3F7] truncate mt-0.5">
-                  {user.displayName || user.email || 'Puzzle Seeker'}
-                </div>
-                {user.email && (
-                  <div className="text-[11px] text-[#B9A8CC] font-mono truncate">
-                    {user.email}
+              <div className="flex items-center gap-3 min-w-0">
+                <img
+                  src={getSafeAvatarUrl(user.photoURL, user.displayName || user.email || 'User')}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => handleAvatarError(e, user.displayName || user.email || 'User')}
+                  className="w-10 h-10 rounded-full object-cover border-2 border-[#F6C915] shadow-md shrink-0"
+                />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>Cloud Sync Active</span>
                   </div>
-                )}
+                  <div className="font-display font-bold text-sm text-[#F5F3F7] truncate mt-0.5">
+                    {user.displayName || user.email || 'Puzzle Seeker'}
+                  </div>
+                  {user.email && (
+                    <div className="text-[11px] text-[#B9A8CC] font-mono truncate">
+                      {user.email}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <button

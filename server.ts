@@ -29,27 +29,42 @@ let tiktokConn: TikTokLiveConnection | null = null;
 let currentConnectedUsername: string | null = null;
 let currentRoomId: string | null = null;
 
+function cleanUrl(val: any): string {
+  if (!val || typeof val !== "string") return "";
+  const s = val.trim();
+  if (!s) return "";
+  if (s.startsWith("//")) return "https:" + s;
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  return "";
+}
+
 function extractProfilePicture(data: any): string {
   if (!data) return "";
-  if (typeof data.profilePictureUrl === "string" && data.profilePictureUrl.startsWith("http")) {
-    return data.profilePictureUrl;
-  }
-  const user = data.user || data;
-  if (typeof user.profilePictureUrl === "string" && user.profilePictureUrl.startsWith("http")) {
-    return user.profilePictureUrl;
-  }
+  const directPfp = cleanUrl(data.profilePictureUrl || data.avatarUrl);
+  if (directPfp) return directPfp;
+
+  const user = data.user || data.userDetails || data.author || data;
+  const userPfp = cleanUrl(user.profilePictureUrl || user.avatarUrl);
+  if (userPfp) return userPfp;
+
   const candidates = [
     user?.profilePicture?.urls?.[0],
+    user?.profilePicture?.urlList?.[0],
     user?.profilePicture?.mUrls?.[0],
+    user?.profile_picture?.urls?.[0],
+    user?.profile_picture?.url_list?.[0],
     user?.avatarThumb?.urls?.[0],
+    user?.avatarThumb?.urlList?.[0],
     user?.avatarThumb?.mUrls?.[0],
     user?.avatarMedium?.urls?.[0],
+    user?.avatarMedium?.urlList?.[0],
     user?.avatarLarge?.urls?.[0],
+    user?.avatarLarge?.urlList?.[0],
+    user?.profilePictureUrlList?.[0],
   ];
   for (const url of candidates) {
-    if (typeof url === "string" && url.startsWith("http")) {
-      return url;
-    }
+    const cleaned = cleanUrl(url);
+    if (cleaned) return cleaned;
   }
   return "";
 }

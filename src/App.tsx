@@ -45,6 +45,7 @@ import {
   TikTokLeaderboardPanel,
   LeaderboardPlayer,
   LiveFeedItem,
+  GameAnswerItem,
 } from './components/TikTokLeaderboardPanel';
 import {
   auth,
@@ -54,6 +55,7 @@ import {
   subscribeToUserHighScores,
   saveHighScoreToFirestore,
 } from './utils/firebase';
+import { getSafeAvatarUrl, handleAvatarError } from './utils/avatar';
 import { io, Socket } from 'socket.io-client';
 
 type GameState = 'TITLE_MENU' | 'PLAYING' | 'PAUSED' | 'VICTORY';
@@ -100,6 +102,7 @@ export default function App() {
   const [tiktokError, setTiktokError] = useState<string | null>(null);
   const [roomId, setRoomId] = useState<string>('');
   const [leaderboard, setLeaderboard] = useState<LeaderboardPlayer[]>([]);
+  const [gameAnswers, setGameAnswers] = useState<GameAnswerItem[]>([]);
   const [liveFeed, setLiveFeed] = useState<LiveFeedItem[]>([]);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState<boolean>(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState<boolean>(false);
@@ -378,18 +381,19 @@ export default function App() {
         showToast: toastFn,
       } = puzzleStateRef.current;
 
-      const uniqueId = data.uniqueId || 'viewer';
+      const uniqueId = (data.uniqueId || 'viewer').replace(/^@+/, '');
       const cleanNick = (data.nickname || uniqueId).replace(/^@+/, '') || 'Player';
       const rawComment = (data.comment || '').trim();
       if (!rawComment) return;
       const lowerComment = rawComment.toLowerCase();
-      const pfp = data.profilePictureUrl || '';
+      const pfp = getSafeAvatarUrl(data.profilePictureUrl, uniqueId || cleanNick);
 
       // Support chat commands !rotate and !hint
       if (lowerComment === '!rotate' || lowerComment === 'rotate') {
         rotateFn();
         toastFn(`${cleanNick} rotated the board!`, 'purple', '90° Clockwise', pfp);
         setLiveFeed((prev) => [
+          ...prev.slice(-99),
           {
             id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
             type: 'chat',
@@ -400,7 +404,6 @@ export default function App() {
             isCommand: true,
             timestamp: Date.now(),
           },
-          ...prev.slice(0, 49),
         ]);
         return;
       }
@@ -408,6 +411,7 @@ export default function App() {
       if (lowerComment === '!hint' || lowerComment === 'hint') {
         hintFn();
         setLiveFeed((prev) => [
+          ...prev.slice(-99),
           {
             id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
             type: 'chat',
@@ -418,7 +422,6 @@ export default function App() {
             isCommand: true,
             timestamp: Date.now(),
           },
-          ...prev.slice(0, 49),
         ]);
         return;
       }
@@ -475,9 +478,23 @@ export default function App() {
               );
             }
 
+            // Update individual game answers feed
+            const gameAnswerItem: GameAnswerItem = {
+              id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              uniqueId,
+              nickname: cleanNick,
+              profilePictureUrl: pfp,
+              word: candidate,
+              points: entry.points,
+              timestamp: Date.now(),
+              isBonus: false,
+            };
+            setGameAnswers((prev) => [gameAnswerItem, ...prev].slice(0, 50));
+
             // Update player on leaderboard (nickname only, never @name)
             setLeaderboard((prev) => {
               const existingIdx = prev.findIndex((p) => p.id === uniqueId);
+              const newAnswer = { word: candidate, points: entry.points, timestamp: Date.now() };
               let updated: LeaderboardPlayer[];
               if (existingIdx >= 0) {
                 const ex = prev[existingIdx];
@@ -490,6 +507,7 @@ export default function App() {
                   featuredFound: ex.featuredFound || Boolean(entry.isFeatured),
                   lastWord: candidate,
                   lastWordPoints: entry.points,
+                  answers: [newAnswer, ...(ex.answers || [])].slice(0, 10),
                   updatedAt: Date.now(),
                 };
                 updated = [...prev];
@@ -505,6 +523,7 @@ export default function App() {
                   featuredFound: Boolean(entry.isFeatured),
                   lastWord: candidate,
                   lastWordPoints: entry.points,
+                  answers: [newAnswer],
                   updatedAt: Date.now(),
                 };
                 updated = [newPlayer, ...prev];
@@ -536,8 +555,21 @@ export default function App() {
                   pfp
                 );
 
+                const gameAnswerItem: GameAnswerItem = {
+                  id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                  uniqueId,
+                  nickname: cleanNick,
+                  profilePictureUrl: pfp,
+                  word: candidate,
+                  points: bonusPts,
+                  timestamp: Date.now(),
+                  isBonus: true,
+                };
+                setGameAnswers((prev) => [gameAnswerItem, ...prev].slice(0, 50));
+
                 setLeaderboard((prev) => {
                   const existingIdx = prev.findIndex((p) => p.id === uniqueId);
+                  const newAnswer = { word: candidate, points: bonusPts, timestamp: Date.now(), isBonus: true };
                   let updated: LeaderboardPlayer[];
                   if (existingIdx >= 0) {
                     const ex = prev[existingIdx];
@@ -549,6 +581,7 @@ export default function App() {
                       bonusWords: ex.bonusWords + 1,
                       lastWord: candidate,
                       lastWordPoints: bonusPts,
+                      answers: [newAnswer, ...(ex.answers || [])].slice(0, 10),
                       updatedAt: Date.now(),
                     };
                     updated = [...prev];
@@ -564,6 +597,7 @@ export default function App() {
                       featuredFound: false,
                       lastWord: candidate,
                       lastWordPoints: bonusPts,
+                      answers: [newAnswer],
                       updatedAt: Date.now(),
                     };
                     updated = [newPlayer, ...prev];
@@ -578,6 +612,7 @@ export default function App() {
       }
 
       setLiveFeed((prev) => [
+        ...prev.slice(-99),
         {
           id: `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
           type: 'chat',
@@ -589,7 +624,6 @@ export default function App() {
           matchedPoints,
           timestamp: Date.now(),
         },
-        ...prev.slice(0, 49),
       ]);
     },
     []
@@ -679,6 +713,33 @@ export default function App() {
     [socket, gameState, showToast]
   );
 
+  const handleReconnectTikTok = useCallback(
+    (username: string, isTestMode?: boolean) => {
+      const clean = username.trim().replace(/^@+/, '') || tiktokUsername || 'streamer';
+      setTiktokUsername(clean);
+      setTiktokError(null);
+
+      if (isTestMode) {
+        setIsLiveConnected(true);
+        setRoomId('TEST_SIMULATION_ROOM');
+        showToast(
+          `Test Mode Reconnected: @${clean}`,
+          'gold',
+          'Leaderboard & Chat Feed refreshed for testing!'
+        );
+      } else {
+        socket?.emit('connect-tiktok', clean);
+        showToast(`Reconnecting @${clean} to TikTok LIVE...`, 'neutral');
+      }
+
+      setIsConnectModalOpen(false);
+      if (gameState === 'TITLE_MENU') {
+        setGameState('PLAYING');
+      }
+    },
+    [socket, tiktokUsername, gameState, showToast]
+  );
+
   const handleDisconnectTikTok = useCallback(() => {
     socket?.emit('disconnect-tiktok');
     setIsLiveConnected(false);
@@ -688,6 +749,7 @@ export default function App() {
 
   const handleResetLeaderboard = useCallback(() => {
     setLeaderboard([]);
+    setGameAnswers([]);
     setLiveFeed([]);
     showToast('Leaderboard scores reset', 'neutral');
   }, [showToast]);
@@ -970,6 +1032,7 @@ export default function App() {
         tiktokError={tiktokError}
         roomId={roomId}
         onConnect={handleConnectTikTok}
+        onReconnect={handleReconnectTikTok}
         onDisconnect={handleDisconnectTikTok}
         onOpenSimulator={() => setIsSimulatorOpen(true)}
         onSimulateChat={handleSimulateChat}
@@ -1118,7 +1181,17 @@ export default function App() {
                   : 'Sign In / Account High Scores'
               }
             >
-              <Trophy className="w-4 h-4 text-[#F6C915]" />
+              {currentUser?.photoURL ? (
+                <img
+                  src={getSafeAvatarUrl(currentUser.photoURL, currentUser.displayName || 'User')}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => handleAvatarError(e, currentUser.displayName || 'User')}
+                  className="w-4 h-4 rounded-full object-cover border border-[#F6C915]"
+                />
+              ) : (
+                <Trophy className="w-4 h-4 text-[#F6C915]" />
+              )}
               <span className="hidden sm:inline">
                 {currentUser ? (currentUser.displayName || 'Account') : 'Account'}
               </span>
@@ -1247,7 +1320,7 @@ export default function App() {
       </div>
 
       {/* Main Playfield Split Layout */}
-      <main className="flex-1 min-h-0 max-w-7xl w-full mx-auto px-3 sm:px-6 py-2.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5 items-stretch">
+      <main className="flex-1 min-h-0 max-w-7xl w-full mx-auto px-3 sm:px-6 py-2.5 sm:py-4 grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5 items-stretch overflow-hidden">
         {/* Left/Center Column: Active Word Readout + Tactile Grid + Action Bar */}
         <section
           className={`${
@@ -1289,6 +1362,7 @@ export default function App() {
                     src={toast.avatarUrl}
                     alt=""
                     referrerPolicy="no-referrer"
+                    onError={(e) => handleAvatarError(e, toast.text)}
                     className="w-7 h-7 rounded-full object-cover border border-[#F6C915] shrink-0"
                   />
                 )}
@@ -1396,7 +1470,7 @@ export default function App() {
             <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-[#19042B]/80 border border-[#E6BE5A]/25 text-xs">
               <div className="flex items-center gap-1.5 font-medium text-[#E6BE5A]">
                 <Compass className="w-3.5 h-3.5 text-[#F6C915]" />
-                <span>★ Missing Piece ({basePuzzle.featuredWord.length} Letters):</span>
+                <span>★ Missing Piece Bonus Word:</span>
               </div>
               <span className="font-mono font-bold tracking-widest text-[#F6C915]">
                 {foundFeatured
@@ -1416,7 +1490,7 @@ export default function App() {
         <section
           className={`${
             isLiveConnected ? 'lg:col-span-7 xl:col-span-7' : 'lg:col-span-6 xl:col-span-6'
-          } min-h-0 flex flex-col ${
+          } h-full min-h-0 overflow-hidden flex flex-col ${
             mobileTab === 'board' ? 'hidden lg:flex' : 'flex'
           }`}
         >
@@ -1425,6 +1499,7 @@ export default function App() {
               tiktokUsername={tiktokUsername}
               isConnected={isLiveConnected}
               leaderboard={leaderboard}
+              gameAnswers={gameAnswers}
               liveFeed={liveFeed}
               foundWordsCount={foundWords.size}
               totalRequiredWords={requiredWords.size}

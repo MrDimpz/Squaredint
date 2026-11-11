@@ -16,6 +16,14 @@ import {
   ChevronUp,
   Wand2,
 } from 'lucide-react';
+import { getSafeAvatarUrl, handleAvatarError } from '../utils/avatar';
+
+export interface PlayerAnswer {
+  word: string;
+  points: number;
+  timestamp: number;
+  isBonus?: boolean;
+}
 
 export interface LeaderboardPlayer {
   id: string;
@@ -27,6 +35,7 @@ export interface LeaderboardPlayer {
   featuredFound: boolean;
   lastWord?: string;
   lastWordPoints?: number;
+  answers: PlayerAnswer[]; // Last 10 answers with scroll
   updatedAt: number;
 }
 
@@ -43,10 +52,22 @@ export interface LiveFeedItem {
   isCommand?: boolean;
 }
 
+export interface GameAnswerItem {
+  id: string;
+  uniqueId: string;
+  nickname: string;
+  profilePictureUrl: string;
+  word: string;
+  points: number;
+  timestamp: number;
+  isBonus?: boolean;
+}
+
 interface TikTokLeaderboardPanelProps {
   tiktokUsername: string;
   isConnected: boolean;
   leaderboard: LeaderboardPlayer[];
+  gameAnswers: GameAnswerItem[];
   liveFeed: LiveFeedItem[];
   foundWordsCount: number;
   totalRequiredWords: number;
@@ -63,22 +84,22 @@ const SAMPLE_PERSONAS = [
   {
     uniqueId: 'luna_stars',
     nickname: 'Luna Starlight',
-    profilePictureUrl: 'https://api.dicebear.com/9.x/avataaars/svg?seed=LunaStarlight&backgroundColor=ffdfbf',
+    profilePictureUrl: 'https://i.pravatar.cc/150?u=LunaStarlight',
   },
   {
     uniqueId: 'marcus_v',
     nickname: 'Marcus Vance',
-    profilePictureUrl: 'https://api.dicebear.com/9.x/avataaars/svg?seed=MarcusVance&backgroundColor=b6e3f4',
+    profilePictureUrl: 'https://i.pravatar.cc/150?u=MarcusVance',
   },
   {
     uniqueId: 'chloe_b',
     nickname: 'Chloe Blossom',
-    profilePictureUrl: 'https://api.dicebear.com/9.x/avataaars/svg?seed=ChloeBlossom&backgroundColor=ffd5dc',
+    profilePictureUrl: 'https://i.pravatar.cc/150?u=ChloeBlossom',
   },
   {
     uniqueId: 'kai_h',
     nickname: 'Kai Horizon',
-    profilePictureUrl: 'https://api.dicebear.com/9.x/avataaars/svg?seed=KaiHorizon&backgroundColor=c0aede',
+    profilePictureUrl: 'https://i.pravatar.cc/150?u=KaiHorizon',
   },
 ];
 
@@ -103,10 +124,10 @@ function getNicknameColor(name: string): string {
   return NICKNAME_COLORS[Math.abs(hash) % NICKNAME_COLORS.length];
 }
 
-function getFallbackAvatar(nickname: string): string {
-  const clean = nickname.replace(/^@+/, '') || 'Player';
+function getFallbackAvatar(nickname: string, uniqueId?: string): string {
+  const clean = uniqueId || nickname.replace(/^@+/, '') || 'Player';
   const encoded = encodeURIComponent(clean);
-  return `https://api.dicebear.com/9.x/avataaars/svg?seed=${encoded}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf`;
+  return `https://i.pravatar.cc/150?u=${encoded}`;
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -123,6 +144,7 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
   tiktokUsername,
   isConnected,
   leaderboard,
+  gameAnswers,
   liveFeed,
   foundWordsCount,
   totalRequiredWords,
@@ -146,16 +168,22 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
 
   // Auto-scroll chat feed to newest event at bottom
   const chatScrollContainerRef = useRef<HTMLDivElement>(null);
-  const isAutoScrollPausedRef = useRef(false);
+  const chatBottomAnchorRef = useRef<HTMLDivElement>(null);
 
   // Filter to actual chat comments only (ignoring any likes, gifts, or telemetry)
   const chatMessages = liveFeed.filter((item) => item && item.type === 'chat' && item.comment?.trim());
 
   useEffect(() => {
-    if (!isAutoScrollPausedRef.current && chatScrollContainerRef.current) {
-      chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
-    }
-  }, [chatMessages]);
+    const scrollToLatest = () => {
+      if (chatScrollContainerRef.current) {
+        chatScrollContainerRef.current.scrollTop = chatScrollContainerRef.current.scrollHeight;
+      }
+      chatBottomAnchorRef.current?.scrollIntoView({ block: 'end' });
+    };
+    scrollToLatest();
+    const rafId = requestAnimationFrame(scrollToLatest);
+    return () => cancelAnimationFrame(rafId);
+  }, [chatMessages.length, liveFeed, mobileTab]);
 
   const handleSendChat = (commentText?: string) => {
     const text = (commentText ?? chatInput).trim();
@@ -294,7 +322,13 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                     : 'bg-white/5 border-white/10 text-[#D6CBE2] hover:bg-white/10'
                 }`}
               >
-                <img src={p.profilePictureUrl} alt="" className="w-4 h-4 rounded-full object-cover" />
+                <img
+                  src={getSafeAvatarUrl(p.profilePictureUrl, p.nickname)}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => handleAvatarError(e, p.nickname)}
+                  className="w-4 h-4 rounded-full object-cover shrink-0"
+                />
                 <span>{p.nickname}</span>
               </button>
             ))}
@@ -340,14 +374,14 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
         </div>
       )}
 
-      {/* Main Split Grid: 50% Scoreboard (Left) + 50% Live TikTok Chat (Right) */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-[#E5DCEF] dark:divide-white/10 overflow-hidden">
+      {/* Main Split Grid: Scoreboard (Left) + Live TikTok Chat (Right) with 10px Gap */}
+      <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 gap-[10px] p-[10px] overflow-hidden">
         
         {/* ========================================================================= */}
         {/* COLUMN 1: SCOREBOARD / LEADERBOARD (Half Width)                            */}
         {/* ========================================================================= */}
         <div
-          className={`flex flex-col h-full min-h-0 bg-transparent ${
+          className={`flex flex-col h-full min-h-0 rounded-2xl border border-[#D4C5E2] dark:border-white/10 bg-white/90 dark:bg-[#1C0630]/90 shadow-md overflow-hidden ${
             mobileTab === 'chat' ? 'hidden md:flex' : 'flex'
           }`}
         >
@@ -362,113 +396,70 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
             </span>
           </div>
 
-          {/* Player Leaderboard List */}
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
-            {leaderboard.length === 0 ? (
+          {/* Individual Answers Scoreboard List */}
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2 max-h-[520px]">
+            {gameAnswers.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-4 space-y-2.5 my-auto">
                 <div className="w-10 h-10 rounded-2xl bg-[#F6C915]/15 border border-[#F6C915]/40 flex items-center justify-center text-[#F6C915]">
                   <Trophy className="w-5 h-5" />
                 </div>
                 <div className="space-y-1 max-w-[220px]">
                   <h4 className="font-display font-bold text-sm text-[#1E0A33] dark:text-[#F5F3F7]">
-                    No Points Scored Yet!
+                    No Answers Found Yet!
                   </h4>
                   <p className="text-[11px] text-[#6E5687] dark:text-[#B9A8CC] leading-relaxed">
-                    Viewers typing valid words in your live chat will appear and rank here.
+                    Individual answers from players in live chat will appear and rank here.
                   </p>
                 </div>
               </div>
             ) : (
-              leaderboard.map((player, index) => {
+              gameAnswers.map((ans, index) => {
                 const rank = index + 1;
-                const isFirst = rank === 1;
-                const isSecond = rank === 2;
-                const isThird = rank === 3;
-                const displayNickname = player.nickname.replace(/^@+/, '') || 'Player';
+                const displayNickname = ans.nickname.replace(/^@+/, '') || 'Player';
+                const pfp =
+                  ans.profilePictureUrl && ans.profilePictureUrl.startsWith('http')
+                    ? ans.profilePictureUrl
+                    : getFallbackAvatar(displayNickname, ans.uniqueId);
 
                 return (
                   <div
-                    key={player.id}
-                    className={`flex items-center justify-between gap-2.5 px-3 py-2 rounded-xl border transition-all animate-pop ${
-                      isFirst
-                        ? 'bg-gradient-to-r from-[#4A1475] via-[#380D5A] to-[#2B0846] border-[#F6C915] shadow-[0_4px_14px_rgba(246,201,21,0.2)]'
-                        : isSecond
-                          ? 'bg-[#2E0B4D]/90 border-slate-300/40'
-                          : isThird
-                            ? 'bg-[#290944]/90 border-amber-600/45'
-                            : 'bg-[#F6F3FA] dark:bg-black/30 border-[#E6DFEE] dark:border-white/10'
-                    }`}
+                    key={ans.id || `${ans.uniqueId}-${ans.word}-${index}`}
+                    className="flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl border bg-[#F6F3FA] dark:bg-black/30 border-[#E6DFEE] dark:border-white/10 transition-all animate-pop"
                   >
-                    {/* Left: Rank Badge + Avatar + Display Nickname (Never @name) */}
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div
-                        className={`w-5 h-5 rounded-md font-mono font-bold text-[11px] flex items-center justify-center shrink-0 ${
-                          isFirst
-                            ? 'bg-[#F6C915] text-[#1D0830]'
-                            : isSecond
-                              ? 'bg-slate-200 text-slate-900'
-                              : isThird
-                                ? 'bg-amber-600 text-white'
-                                : 'bg-white/10 text-[#B9A8CC]'
-                        }`}
-                      >
-                        {isFirst ? <Crown className="w-3 h-3 fill-current" /> : `#${rank}`}
+                      <div className="w-5 h-5 rounded-md font-mono font-bold text-[11px] flex items-center justify-center shrink-0 bg-white/10 text-[#B9A8CC]">
+                        #{rank}
                       </div>
 
-                      {/* Player Profile Picture */}
-                      <div className="relative shrink-0">
-                        <img
-                          src={player.profilePictureUrl || getFallbackAvatar(displayNickname)}
-                          alt={displayNickname}
-                          referrerPolicy="no-referrer"
-                          onError={(e) => {
-                            const target = e.currentTarget;
-                            const fallback = getFallbackAvatar(displayNickname);
-                            if (target.src !== fallback) {
-                              target.src = fallback;
-                            }
-                          }}
-                          className={`w-8 h-8 rounded-full object-cover border-2 ${
-                            isFirst
-                              ? 'border-[#F6C915]'
-                              : isSecond
-                                ? 'border-slate-300'
-                                : isThird
-                                  ? 'border-amber-500'
-                                  : 'border-[#E6BE5A]/40'
-                          }`}
-                        />
-                        {player.featuredFound && (
-                          <span
-                            title="Uncovered the ★ Missing Piece!"
-                            className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#F6C915] text-[#1D0830] flex items-center justify-center shadow"
-                          >
-                            <Sparkles className="w-2 h-2 fill-current" />
-                          </span>
-                        )}
-                      </div>
+                      <img
+                        src={getSafeAvatarUrl(ans.profilePictureUrl, displayNickname)}
+                        alt={displayNickname}
+                        referrerPolicy="no-referrer"
+                        onError={(e) => handleAvatarError(e, displayNickname)}
+                        className="w-8 h-8 rounded-full object-cover border-2 border-[#E6BE5A]/50 shrink-0"
+                      />
 
-                      {/* Nickname & Words Count */}
                       <div className="min-w-0">
-                        <div className="font-display font-bold text-xs sm:text-sm text-[#1E0A33] dark:text-[#F5F3F7] truncate">
-                          {displayNickname}
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-display font-bold text-xs sm:text-sm text-[#1E0A33] dark:text-[#F5F3F7] truncate">
+                            {displayNickname}
+                          </span>
+                          <span className="text-[10px] text-[#8E79A6] shrink-0">found</span>
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-[#6E5687] dark:text-[#B9A8CC] font-mono">
-                          <span>{player.wordsFound}w</span>
-                          {player.bonusWords > 0 && <span>+{player.bonusWords}b</span>}
-                          {player.lastWord && (
-                            <span className="px-1 py-0.2 rounded bg-[#F6C915]/15 text-[#F6C915] font-semibold truncate max-w-[70px]">
-                              {player.lastWord}
-                            </span>
-                          )}
+                        <div className="flex items-center gap-1.5">
+                          <span className="px-1.5 py-0.5 rounded bg-[#F6C915]/20 border border-[#F6C915]/40 text-xs font-mono font-bold text-[#F6C915] truncate">
+                            {ans.word}
+                          </span>
+                          <span className="text-[10px] text-[#8E79A6] font-mono shrink-0">
+                            {formatTimeAgo(ans.timestamp)}
+                          </span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Right: Score */}
                     <div className="text-right shrink-0">
                       <div className="font-mono font-extrabold text-sm sm:text-base text-[#9A6B00] dark:text-[#F6C915] tabular-nums">
-                        {player.score} pts
+                        +{ans.points} pts
                       </div>
                     </div>
                   </div>
@@ -485,10 +476,10 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
         </div>
 
         {/* ========================================================================= */}
-        {/* COLUMN 2: AUTHENTIC LIVE TIKTOK CHAT FEED (Half Width, No Black Bars)    */}
+        {/* COLUMN 2: AUTHENTIC LIVE TIKTOK CHAT FEED (Half Width)                   */}
         {/* ========================================================================= */}
         <div
-          className={`flex flex-col h-full min-h-0 bg-[#0F021A]/60 ${
+          className={`flex flex-col h-full min-h-0 rounded-2xl border border-[#D4C5E2] dark:border-white/10 bg-[#0F021A]/80 shadow-md overflow-hidden ${
             mobileTab === 'scoreboard' ? 'hidden md:flex' : 'flex'
           }`}
         >
@@ -507,13 +498,7 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
           {/* Scrollable Live Chat Feed (Clean Authentic Stream Chat Layout) */}
           <div
             ref={chatScrollContainerRef}
-            onScroll={(e) => {
-              const target = e.currentTarget;
-              const isNearBottom =
-                target.scrollHeight - target.scrollTop - target.clientHeight < 60;
-              isAutoScrollPausedRef.current = !isNearBottom;
-            }}
-            className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1.5 font-sans"
+            className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 space-y-1.5 font-sans"
           >
             {chatMessages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-4 space-y-2.5 my-auto">
@@ -541,16 +526,10 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                   >
                     {/* Compact Viewer Avatar */}
                     <img
-                      src={item.profilePictureUrl || getFallbackAvatar(cleanNick)}
+                      src={getSafeAvatarUrl(item.profilePictureUrl, cleanNick)}
                       alt=""
                       referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        const target = e.currentTarget;
-                        const fallback = getFallbackAvatar(cleanNick);
-                        if (target.src !== fallback) {
-                          target.src = fallback;
-                        }
-                      }}
+                      onError={(e) => handleAvatarError(e, cleanNick)}
                       className="w-5 h-5 rounded-full object-cover shrink-0 mt-0.5 border border-white/20"
                     />
 
@@ -559,11 +538,9 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                       <span className={`font-display font-bold text-xs ${colorClass} mr-1.5 inline-block select-none`}>
                         {cleanNick}:
                       </span>
-
                       <span className="text-[#F1F5F9] font-normal break-words selection:bg-[#F6C915] selection:text-[#1F0933]">
                         {item.comment}
                       </span>
-
                       {/* Inline Word Discovery Badge */}
                       {item.matchedWord && (
                         <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-500/25 border border-emerald-400/50 text-emerald-300 font-mono text-[11px] font-bold align-middle shadow-xs animate-pulse">
@@ -571,7 +548,6 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                           <span>Found "{item.matchedWord}" (+{item.matchedPoints} pts)</span>
                         </span>
                       )}
-
                       {/* Inline Command Execution Badge */}
                       {item.isCommand && (
                         <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-purple-500/25 border border-purple-400/40 text-purple-300 font-mono text-[10px] align-middle">
@@ -589,6 +565,7 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                 );
               })
             )}
+            <div ref={chatBottomAnchorRef} />
           </div>
 
           {/* Quick Chat Input Bar */}
@@ -601,8 +578,10 @@ export const TikTokLeaderboardPanel: React.FC<TikTokLeaderboardPanelProps> = ({
                 title="Cycle persona"
               >
                 <img
-                  src={activePersona.profilePictureUrl}
+                  src={getSafeAvatarUrl(activePersona.profilePictureUrl, activePersona.nickname)}
                   alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => handleAvatarError(e, activePersona.nickname)}
                   className="w-4 h-4 rounded-full object-cover shrink-0"
                 />
                 <span className="font-medium max-w-[65px] truncate">
