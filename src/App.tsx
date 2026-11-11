@@ -1387,6 +1387,37 @@ export default function App() {
             )}
           </div>
 
+          {/* Words Found / Required Counter Indicator */}
+          <div className="w-full max-w-[390px] px-1 py-1 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs uppercase tracking-wider font-bold text-[#E6BE5A]">
+                Words Found
+              </span>
+              <span className="font-mono font-extrabold text-sm sm:text-base text-[#F6C915] bg-[#3B115A] px-2.5 py-0.5 rounded-lg border border-[#F6C915]/30 shadow-xs tabular-nums">
+                {foundWords.size} / {requiredWords.size}
+              </span>
+              {bonusWords.length > 0 && (
+                <span className="text-[11px] font-mono font-semibold text-emerald-300 bg-emerald-950/70 border border-emerald-500/30 px-2 py-0.5 rounded-md">
+                  +{bonusWords.length} bonus
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono font-bold text-[#D6CBE2] tabular-nums">
+                {Math.min(100, Math.round((foundWords.size / Math.max(requiredWords.size, 1)) * 100))}%
+              </span>
+              <div className="w-20 sm:w-24 h-2 bg-[#260C3B] rounded-full overflow-hidden border border-[#52217D]">
+                <div
+                  className="h-full bg-gradient-to-r from-[#E6BE5A] to-[#F6C915] transition-all duration-300 rounded-full"
+                  style={{
+                    width: `${Math.min(100, (foundWords.size / Math.max(requiredWords.size, 1)) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
           {/* Interactive Squaredle/Squares Board */}
           <div className="my-auto py-1">
             <WordGridBoard
